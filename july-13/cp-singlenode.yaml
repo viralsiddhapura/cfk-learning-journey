@@ -43,8 +43,8 @@ metadata:
   name: viral-topic
   namespace: confluent
 spec:
-  kafkaClusterRef:
-    name: krc-ref
+  kafkaRestClassRef:
+    name: krc-cfk
   replicas: 1
   partitionCount: 4
   configs:
