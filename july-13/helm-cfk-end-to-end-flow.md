@@ -1,80 +1,61 @@
 # Helm and CFK: end-to-end flow
 
-```mermaid
-flowchart TB
-    USER([Engineer])
-    APISERVER["Kubernetes API Server"]
+![Helm and CFK flow from installation to running Kafka](./helm-cfk-end-to-end-flow.png)
 
-    subgraph INSTALL["1. Bootstrap CFK — install or upgrade"]
-        HELM["Helm client"]
-        CHART["CFK Helm chart"]
-        CRDS["CRDs<br/>Kafka and KRaftController API types"]
-        ACCESS["ServiceAccount and RBAC"]
-        DEPLOY["Deployment: confluent-operator"]
-        OP["Operator Pod<br/>confluent-operator-&lt;hash&gt;-&lt;suffix&gt;"]
+The diagram separates the workflow into three phases: installing CFK, declaring the desired state, and continuously reconciling that state into running Kafka infrastructure.
 
-        HELM -->|"renders templates with values"| CHART
-        CHART -->|"submits Kubernetes objects"| APISERVER
-        APISERVER --> CRDS
-        APISERVER --> ACCESS
-        APISERVER --> DEPLOY
-        DEPLOY -->|"ReplicaSet creates"| OP
-    end
+## 1. Install CFK once
 
-    subgraph DECLARE["2. Declare the desired Confluent state"]
-        APPLY["kubectl apply"]
-        FILE["cp-singlenode.yaml<br/>KRaftController/kraftcontroller<br/>Kafka/kafka"]
-        STORE[("etcd<br/>spec = desired state")]
+Helm acts as the installer and release manager:
 
-        APPLY --> FILE
-        FILE -->|"two custom-resource requests"| APISERVER
-        CRDS -.->|"supply types and validation schemas"| APISERVER
-        APISERVER -->|"validates and persists"| STORE
-    end
+1. The Helm client downloads and reads the CFK Helm chart.
+2. It combines the chart templates with the configured Helm values.
+3. It submits the rendered Kubernetes resources to the Kubernetes API server.
+4. Kubernetes creates the Confluent CRDs, the operator's ServiceAccount and RBAC permissions, and the `confluent-operator` Deployment.
+5. The Deployment creates an operator Pod.
 
-    subgraph RECONCILE["3. CFK reconciliation — continuous"]
-        GENERATED["Generated Kubernetes objects<br/>StatefulSets, Services, ConfigMaps and PVCs"]
-        CONTROL["Built-in Kubernetes controllers<br/>StatefulSet controller, scheduler and storage provisioner"]
-        KUBELET["Node kubelet<br/>pulls images and runs containers"]
-        KRAFT["kraftcontroller-0<br/>10 Gi PVC"]
-        KAFKA["kafka-0<br/>10 Gi PVC"]
-        STATUS["Custom-resource status<br/>RUNNING, readyReplicas: 1"]
+The CRDs teach the API server about Confluent resource types such as `Kafka` and `KRaftController`. RBAC gives the operator permission to watch those resources and manage the Kubernetes resources needed to implement them.
 
-        APISERVER -->|"watch events and current state"| OP
-        OP -->|"create or update"| APISERVER
-        APISERVER --> GENERATED
-        GENERATED --> CONTROL
-        CONTROL --> KUBELET
-        KUBELET --> KRAFT
-        KRAFT -->|"Kafka clusterRef dependency is ready"| KAFKA
-        KUBELET --> KAFKA
-        OP -->|"reports observed state"| STATUS
-        STATUS --> APISERVER
-    end
+Helm exits after the installation command finishes. It does not continuously manage the Kafka Pods; that is the operator's job.
 
-    USER --> HELM
-    USER --> APPLY
+## 2. Declare the desired state
 
-    classDef installer fill:#0f766e,color:#fff,stroke:#115e59,stroke-width:2px;
-    classDef api fill:#2563eb,color:#fff,stroke:#1e40af,stroke-width:2px;
-    classDef desired fill:#7c3aed,color:#fff,stroke:#5b21b6,stroke-width:2px;
-    classDef operator fill:#ea580c,color:#fff,stroke:#9a3412,stroke-width:2px;
-    classDef runtime fill:#15803d,color:#fff,stroke:#166534,stroke-width:2px;
+The following command submits the custom resources from `cp-singlenode.yaml`:
 
-    class HELM,CHART installer;
-    class APISERVER,CRDS,ACCESS,DEPLOY api;
-    class APPLY,FILE,STORE desired;
-    class OP,STATUS operator;
-    class GENERATED,CONTROL,KUBELET,KRAFT,KAFKA runtime;
+```bash
+kubectl apply -f cp-singlenode.yaml
 ```
 
-## Reading the diagram
+The file requests:
 
-- **Helm bootstraps CFK:** it renders and submits CRDs, permissions, and the operator Deployment, then the Helm process exits.
-- **The CRDs teach the API server new types:** they make `Kafka` and `KRaftController` valid Kubernetes resources.
-- **Your file owns desired state:** `spec` in `cp-singlenode.yaml` says that one KRaft controller and one Kafka broker should exist.
-- **The operator owns reconciliation:** it watches those custom resources and creates or updates the lower-level Kubernetes objects needed to realize the requested state.
-- **Kubernetes owns execution:** built-in controllers, the scheduler, storage provisioner, and kubelet create PVCs, select a node, and run the Pods.
-- **The operator reports observed state:** it writes readiness and lifecycle information under each custom resource's `status`.
+- One `KRaftController` replica named `kraftcontroller`.
+- One `Kafka` replica named `kafka`.
+- A dependency from `Kafka/kafka` to `KRaftController/kraftcontroller` through `clusterRef`.
 
-The operator Pod's random-looking name is generated from the Deployment name, a ReplicaSet hash, and a unique Pod suffix. Its name may change; its reconciliation role does not.
+`kubectl` sends these objects to the Kubernetes API server. The API server validates them using the installed CRDs and persists their `spec` fields in etcd. The `spec` represents the desired state supplied by the user.
+
+## 3. Reconcile continuously
+
+The CFK operator watches the Kubernetes API for Confluent custom resources. When it sees the two resources from `cp-singlenode.yaml`, it creates or updates the lower-level resources required to implement them, including:
+
+- StatefulSets
+- Services
+- ConfigMaps
+- PersistentVolumeClaims
+
+The standard Kubernetes controllers, scheduler, storage provisioner, and kubelet then turn those objects into the running `kraftcontroller-0` and `kafka-0` Pods and their persistent storage.
+
+The operator repeatedly compares the requested state with the observed state. If something changes or drifts, it reconciles the generated resources again. It also writes information such as `RUNNING` and `readyReplicas` into the custom resources' `status` fields through the API server.
+
+## Ownership of each part
+
+| Component | Responsibility |
+|---|---|
+| User and `cp-singlenode.yaml` | Define the desired state in `spec` |
+| CRDs | Define and validate the `Kafka` and `KRaftController` API types |
+| Kubernetes API server and etcd | Validate, authorize, and persist the resources |
+| CFK operator | Interpret the custom resources and continuously reconcile them |
+| Kubernetes controllers and kubelet | Schedule and run the generated workloads |
+| CFK operator | Report the observed result in `status` |
+
+The short version is: **you define `spec`; CFK reconciles it; Kubernetes runs the Pods; CFK reports `status`.**
