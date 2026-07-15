@@ -543,16 +543,18 @@ The expected result is a topic-not-found error. Reapplying the topic manifest cr
 
 ## Persistence outcome matrix
 
+For hands-on steps covering every row, use [the complete persistence scenario lab](./PERSISTENCE-SCENARIOS.md).
+
 | Operation | Pod outcome | Storage outcome | Expected record outcome |
 |---|---|---|---|
 | Delete `kafka-0` normally | StatefulSet recreates it | Same PVC/PV remounted | Records persist |
-| Kafka container crashes | Container or Pod restarts | Same PVC remains | Acknowledged records persist |
+| Kafka process exits or its container crashes | Container restarts inside the same Pod | Same PVC/PV remains mounted | Acknowledged records persist |
 | Restart Docker Desktop without resetting Kubernetes | Workloads restart | Existing Docker/Kubernetes storage normally remains | Records normally persist |
-| Delete `KafkaTopic/persistence-lab` | Broker remains | Topic partition files are deleted | Topic records are lost |
+| Delete `KafkaTopic/persistence-lab` | Broker remains | Topic is logically deleted; file cleanup is asynchronous | Topic records are lost |
 | Kafka retention expires | Broker remains | Kafka removes expired log segments | Expired records are lost |
 | Delete `data0-kafka-0` | Kafka becomes unhealthy | Backing PV may be deleted | Broker data is lost |
 | Delete `Kafka/kafka` with a `Delete` reclaim policy | Kafka deployment is removed | PVC/PV may be deleted | Broker data is lost |
-| Reset or delete the Docker Desktop cluster | Cluster resources are removed | Local cluster volumes are removed | Data is lost |
+| Reset or delete the Docker Desktop cluster | Cluster resources are removed | Old PVC/PV objects and their usable storage path are removed | Data is treated as lost |
 
 Do not test PVC, Kafka CR, or cluster deletion against data you care about. Use a separate throwaway cluster for those destructive cases.
 
