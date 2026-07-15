@@ -547,6 +547,8 @@ The expected result is a topic-not-found error. Reapplying the topic manifest cr
 
 For hands-on steps covering every row, use [the complete persistence scenario lab](./PERSISTENCE-SCENARIOS.md).
 
+For a filterable operational checklist, open the [CFK Kafka persistence and failure scenarios workbook](./cfk-kafka-persistence-failure-scenarios.xlsx).
+
 | Operation | Pod outcome | Storage outcome | Expected record outcome |
 |---|---|---|---|
 | Delete `kafka-0` normally | StatefulSet recreates it | Same PVC/PV remounted | Records persist |

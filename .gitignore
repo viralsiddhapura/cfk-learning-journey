@@ -1,0 +1,12 @@
+# macOS metadata
+.DS_Store
+
+# Microsoft Excel workbooks and templates
+*.xls
+*.xlsx
+*.xlsm
+*.xlsb
+*.xlt
+*.xltx
+*.xltm
+*.xlam
