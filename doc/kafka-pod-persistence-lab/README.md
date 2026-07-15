@@ -12,6 +12,8 @@ By the end of the lab, you will be able to:
 - Verify that acknowledged Kafka records survive Pod deletion.
 - Understand which deletion operations preserve data and which operations destroy it.
 
+For the deliberately destructive PVC-loss experiment, use [CFK Kafka PVC deletion: end-to-end flow and recovery](./PVC-DELETION-FLOW.md). It includes the PNG flow diagram, the CFK `dummy` claim-template trap, the correct recovery order, production safeguards, and a real-time troubleshooting matrix.
+
 ## Lab environment
 
 The commands assume the following local CFK environment:

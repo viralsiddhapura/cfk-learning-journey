@@ -736,7 +736,7 @@ kubectl -n confluent delete kafkatopic retention-lab
 
 ### What this tests
 
-A PVC in active use is protected from immediate removal. This lab first observes that protection, blocks CFK reconciliation for the Kafka CR, scales the generated StatefulSet to zero, lets the claim deletion complete, and then creates a new empty claim.
+A PVC in active use is protected from immediate removal. This lab first observes that protection, blocks CFK reconciliation for the Kafka CR, scales the generated StatefulSet to zero, lets the claim deletion complete, and then returns control to CFK so CFK can create a new claim that matches the Kafka CR.
 
 This direct StatefulSet manipulation is a controlled failure-injection technique, not a normal CFK administration procedure.
 
@@ -745,6 +745,12 @@ Expected matrix row in this cluster:
 ```text
 Delete data0-kafka-0 -> old PV has Delete policy -> backing storage is deleted -> records are lost
 ```
+
+### Storage deletion and recovery flow
+
+![Kafka PVC deletion, data-loss branches, the dummy StorageClass trap, and CFK recovery](./pvc-deletion-data-loss-flow.png)
+
+The complete annotated flow, production cautions, and real-time troubleshooting matrix are in [CFK Kafka PVC deletion: end-to-end flow and recovery](./PVC-DELETION-FLOW.md).
 
 ### Step 1: Confirm that nothing valuable is present
 
@@ -874,13 +880,65 @@ kubectl -n confluent describe pvc data0-kafka-0
 
 Do not remove the PVC protection finalizer manually.
 
-### Step 6: Let the StatefulSet provision empty storage
+### Step 6: Let CFK recreate valid storage and desired replicas
+
+Keep the generated StatefulSet at `0`. Do **not** manually scale it back to `1` while CFK reconciliation is blocked.
+
+The observed CFK-generated StatefulSet uses a `dummy` StorageClass and a `1Gi` request in its claim template. CFK normally pre-creates the real PVC from the Kafka CR—in this lab, `standard` and `10G`—before it restores the Pod. Manually scaling the StatefulSet to `1` while CFK is blocked lets the StatefulSet controller create the placeholder claim instead.
+
+Inspect the generated template:
 
 ```bash
-kubectl -n confluent scale statefulset kafka --replicas=1
+kubectl -n confluent get statefulset kafka \
+  -o jsonpath='{range .spec.volumeClaimTemplates[*]}name={.metadata.name}{" sc="}{.spec.storageClassName}{" request="}{.spec.resources.requests.storage}{"\n"}{end}'
+```
+
+Normally, `data0-kafka-0` is absent at this point. If it exists, inspect it:
+
+```bash
+kubectl -n confluent get pvc data0-kafka-0 \
+  -o custom-columns='PVC:.metadata.name,SC:.spec.storageClassName,REQUEST:.spec.resources.requests.storage,PV:.spec.volumeName,STATUS:.status.phase'
+```
+
+Delete it only if it is the accidental `dummy`/`1Gi` Pending claim, has no bound PV, and no Pod references it:
+
+```bash
+kubectl -n confluent delete pvc data0-kafka-0
+
+kubectl -n confluent wait \
+  --for=delete \
+  pvc/data0-kafka-0 \
+  --timeout=2m
+```
+
+Do not create a `dummy` StorageClass and do not attempt to patch the PVC. `storageClassName` is immutable after the claim is created.
+
+Remove the temporary Pod-deletion permission, resume CFK, and request reconciliation:
+
+```bash
+kubectl -n confluent label kafka kafka \
+  confluent-operator.webhooks.platform.confluent.io/allow-kafka-pod-deletion-
 
 kubectl -n confluent annotate kafka kafka \
   platform.confluent.io/block-reconcile-
+
+kubectl -n confluent annotate kafka kafka \
+  platform.confluent.io/force-reconcile=true \
+  --overwrite
+```
+
+Let CFK create the real PVC and restore the desired broker replica:
+
+```bash
+kubectl -n confluent wait \
+  --for=create \
+  pvc/data0-kafka-0 \
+  --timeout=5m
+
+kubectl -n confluent wait \
+  --for=jsonpath='{.status.phase}'=Bound \
+  pvc/data0-kafka-0 \
+  --timeout=5m
 
 kubectl -n confluent wait \
   --for=create \
@@ -891,28 +949,15 @@ kubectl -n confluent wait \
   --for=condition=Ready \
   pod/kafka-0 \
   --timeout=10m
-
-kubectl -n confluent label kafka kafka \
-  confluent-operator.webhooks.platform.confluent.io/allow-kafka-pod-deletion-
 ```
 
-If an earlier command fails, make sure reconciliation is unblocked:
-
-```bash
-kubectl -n confluent annotate kafka kafka \
-  platform.confluent.io/block-reconcile-
-
-kubectl -n confluent label kafka kafka \
-  confluent-operator.webhooks.platform.confluent.io/allow-kafka-pod-deletion-
-```
-
-The readiness wait can time out. A fresh empty broker volume plus surviving KRaft metadata is not a valid single-replica data-recovery path. Depending on the recorded metadata and component versions, Kafka can start with empty or unavailable partitions, or remain unhealthy. All are useful observations for this destructive experiment; none restores the deleted records.
+The readiness wait can still time out. A fresh empty broker volume plus surviving KRaft metadata is not a valid single-replica data-recovery path. Depending on the recorded metadata and component versions, Kafka can start with empty or unavailable partitions, or remain unhealthy. All are useful observations for this destructive experiment; none restores the deleted records.
 
 ### Step 7: Prove that this is new storage
 
 ```bash
 kubectl -n confluent get pvc data0-kafka-0 \
-  -o custom-columns='PVC:.metadata.name,UID:.metadata.uid,PV:.spec.volumeName,STATUS:.status.phase'
+  -o custom-columns='PVC:.metadata.name,UID:.metadata.uid,SC:.spec.storageClassName,REQUEST:.spec.resources.requests.storage,CAPACITY:.status.capacity.storage,PV:.spec.volumeName,STATUS:.status.phase'
 ```
 
 Expected:
@@ -920,29 +965,90 @@ Expected:
 - PVC name is still `data0-kafka-0`.
 - PVC UID differs from `OLD_PVC_UID`.
 - PV name differs from `OLD_PV`.
+- PVC is `Bound` and matches the Kafka CR's intended storage class and capacity—in this lab, `standard` and `10G`, not `dummy` and `1Gi`.
 - The old records are no longer readable.
+
+Before producing anything new, describe the topic and attempt a bounded replay of its old records:
+
+```bash
+kubectl -n confluent exec kraftcontroller-0 -c kraftcontroller -- \
+  kafka-topics \
+  --bootstrap-server kafka:9092 \
+  --describe \
+  --topic storage-loss-lab
+
+kubectl -n confluent exec kafka-0 -c kafka -- \
+  kafka-console-consumer \
+  --bootstrap-server kafka:9092 \
+  --topic storage-loss-lab \
+  --from-beginning \
+  --timeout-ms 10000 \
+  --property print.partition=true \
+  --property print.offset=true \
+  --property print.value=true
+```
 
 The KRaft controller may still know the `storage-loss-lab` topic metadata, but the only replica's log bytes were on the deleted broker volume. Topic metadata is not a backup of topic records.
 
 If Kafka does not recover cleanly, use the recovery section below rather than modifying volume files manually.
 
-### Attempt to resume reconciliation after Scenario 6
+### Recovery if a dummy PVC was already created
 
-Ensure reconciliation is unblocked, then reapply the source manifest from the repository root:
+The failure fingerprint is:
+
+```text
+PVC:          data0-kafka-0
+STATUS:       Pending
+STORAGECLASS: dummy
+REQUEST:      1Gi
+EVENT:        storageclass.storage.k8s.io "dummy" not found
+CFK EVENT:    spec is immutable
+```
+
+Simply unblocking CFK or reapplying `cp-singlenode.yaml` cannot repair that existing claim because CFK cannot change its immutable `storageClassName`.
+
+Block reconciliation again, allow this disposable Pod deletion, keep the StatefulSet at `0`, and wait for the Pod to disappear:
 
 ```bash
 kubectl -n confluent annotate kafka kafka \
-  platform.confluent.io/block-reconcile-
+  platform.confluent.io/block-reconcile=true \
+  --overwrite
 
-kubectl apply -f july-13/cp-singlenode.yaml
+kubectl -n confluent label kafka kafka \
+  confluent-operator.webhooks.platform.confluent.io/allow-kafka-pod-deletion=true \
+  --overwrite
+
+kubectl -n confluent scale statefulset kafka --replicas=0
 
 kubectl -n confluent wait \
-  --for=condition=Ready \
+  --for=delete \
   pod/kafka-0 \
-  --timeout=10m
+  --timeout=5m
 ```
 
-This is an attempt to resume reconciliation, not a full rebuild: the Kafka CR, generated StatefulSet, replacement PVC, KRaftController, and controller metadata still exist. Reapplying desired state cannot clear a broker-log/controller-metadata mismatch or reconstruct records whose only storage copy was deleted.
+Inspect the claim. Delete it only after confirming that it is the unbound `dummy`/`1Gi` placeholder:
+
+```bash
+kubectl -n confluent get pvc data0-kafka-0 \
+  -o custom-columns='PVC:.metadata.name,SC:.spec.storageClassName,REQUEST:.spec.resources.requests.storage,PV:.spec.volumeName,STATUS:.status.phase'
+
+kubectl -n confluent delete pvc data0-kafka-0
+
+kubectl -n confluent wait \
+  --for=delete \
+  pvc/data0-kafka-0 \
+  --timeout=2m
+```
+
+Then remove the Pod-deletion label, unblock CFK, and force reconciliation. Follow the waits and verification in Step 6; do not manually scale the StatefulSet to `1`.
+
+Once CFK has created a valid `Bound` replacement PVC, reapplying the source manifest is an optional desired-state check, not a data-recovery operation:
+
+```bash
+kubectl apply -f july-13/cp-singlenode.yaml
+```
+
+Reapplying desired state cannot clear every broker-log/controller-metadata mismatch and cannot reconstruct records whose only storage copy was deleted.
 
 Before proceeding to Scenario 7, require a healthy Kafka cluster. If the readiness wait fails, perform the complete disposable-cluster reset and rebuild in Scenario 8. That recreates both broker and KRaft-controller storage. With `Delete` reclaim plus replication factor `1`, there is no Kubernetes or Kafka mechanism that can reconstruct the old records; only an external volume/data backup could do that.
 
@@ -1378,6 +1484,8 @@ Reinstalling CFK and reapplying manifests creates a new deployment. `persistence
 | `RESTARTS` increases but Pod UID stays the same | Container-process termination/restart | `kubectl logs kafka-0 -c kafka --previous` |
 | Pod UID changes but PVC/PV stay the same | Pod replacement | StatefulSet events and Pod ownership |
 | PVC remains `Terminating` | PVC protection; a Pod still references it | `kubectl describe pvc`; find referencing Pods |
+| PVC is `Pending` with StorageClass `dummy` and a `1Gi` request | StatefulSet recreated its placeholder claim while CFK reconciliation was blocked | Keep/scale StatefulSet to `0`; delete only the bad claim; unblock and force-reconcile CFK; verify the real class and capacity |
+| CFK reports that PVC `spec is immutable` | CFK cannot correct the existing placeholder claim's `storageClassName` | Inspect the PVC and operator events; do not patch it or create a `dummy` StorageClass |
 | PV becomes `Released` | Reclaim policy `Retain` | Preserve it; do not expect automatic rebinding |
 | PV disappears after PVC deletion | Reclaim policy `Delete` | Provisioner events; storage is not recoverable through that PV |
 | KafkaTopic remains `DELETING` | CFK finalizer cannot reach Kafka | KafkaTopic YAML and operator logs |
