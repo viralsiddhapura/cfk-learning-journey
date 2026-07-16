@@ -21,6 +21,11 @@ spec:
     application: docker.io/confluentinc/cp-server:7.9.1
     init: confluentinc/confluent-init-container:2.11.1
   replicas: 1
+  metricReporter:
+    enabled: true
+  configOverrides:
+    server:
+      - confluent.metrics.reporter.topic.replicas=1
   dependencies:
     kRaftController: 
       clusterRef:
