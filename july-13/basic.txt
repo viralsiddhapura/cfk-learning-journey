@@ -1,0 +1,1 @@
+connectadmin: newpassword,admin
