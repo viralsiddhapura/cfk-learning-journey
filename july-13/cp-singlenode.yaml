@@ -26,6 +26,7 @@ spec:
   configOverrides:
     server:
       - confluent.metrics.reporter.topic.replicas=1
+      - group.coordinator.new.enable=false  # To solve KIP-848 - look for control center known issues
   dependencies:
     kRaftController: 
       clusterRef:
