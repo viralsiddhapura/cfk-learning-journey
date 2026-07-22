@@ -1,0 +1,10 @@
+# Local Docker/KIND implementation of the prod-retain StorageClass.
+# Replace the provisioner with the platform CSI driver before using this
+# manifest in a real production Kubernetes cluster.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: prod-retain
+provisioner: rancher.io/local-path
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer

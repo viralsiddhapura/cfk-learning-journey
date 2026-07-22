@@ -1,0 +1,52 @@
+apiVersion: platform.confluent.io/v1beta1
+kind: Connect
+metadata:
+  name: connect
+  namespace: prod
+  annotations:
+    platform.confluent.io/use-log4j1: "true"
+
+spec:
+  replicas: 1
+
+  image:
+    application: docker.io/confluentinc/cp-kafka-connect:7.9.8
+    init: docker.io/confluentinc/confluent-init-container:3.3.0
+    pullPolicy: IfNotPresent
+
+  dependencies:
+    kafka:
+      bootstrapEndpoint: kafka.prod.svc.cluster.local:9071
+      authentication:
+        type: plain
+        jaasConfig:
+          secretRef: connect-kafka-sasl-client
+      tls:
+        enabled: false
+  
+  podTemplate:
+    probe:
+      readiness:
+        path: /connectors
+        port: 8083
+        initialDelaySeconds: 60
+        periodSeconds: 10
+        timeoutSeconds: 10
+        failureThreshold: 3
+      liveness:
+        path: /connectors
+        port: 8083
+        initialDelaySeconds: 120
+        periodSeconds: 10
+        timeoutSeconds: 30
+        failureThreshold: 20
+
+  configOverrides:
+    server:
+      - group.id=prod-connect
+      - config.storage.topic=prod-connect-configs
+      - offset.storage.topic=prod-connect-offsets
+      - status.storage.topic=prod-connect-status
+      - config.storage.replication.factor=3
+      - offset.storage.replication.factor=3
+      - status.storage.replication.factor=3

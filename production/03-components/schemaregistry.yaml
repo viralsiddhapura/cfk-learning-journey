@@ -1,0 +1,29 @@
+apiVersion: platform.confluent.io/v1beta1
+kind: SchemaRegistry
+metadata:
+  name: schemaregistry
+  namespace: prod
+  annotations:
+    platform.confluent.io/use-log4j1: "true"
+
+spec:
+  replicas: 1
+
+  image:
+    application: docker.io/confluentinc/cp-schema-registry:7.9.8
+    init: docker.io/confluentinc/confluent-init-container:3.3.0
+    pullPolicy: IfNotPresent
+
+  dependencies:
+    kafka:
+      bootstrapEndpoint: kafka.prod.svc.cluster.local:9071
+      authentication:
+        type: plain
+        jaasConfig:
+          secretRef: sr-kafka-sasl-client
+      tls:
+        enabled: false
+  
+  configOverrides:
+    server:
+      - kafkastore.topic.replication.factor=3

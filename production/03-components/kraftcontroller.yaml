@@ -1,0 +1,38 @@
+apiVersion: platform.confluent.io/v1beta1
+kind: KRaftController
+metadata:
+  name: kraftcontroller
+  namespace: prod
+  annotations:
+    platform.confluent.io/use-log4j1: "true"
+spec:
+  replicas: 3
+
+  image:
+    application: docker.io/confluentinc/cp-server:7.9.8
+    init: docker.io/confluentinc/confluent-init-container:3.3.0
+    pullPolicy: IfNotPresent
+
+  dataVolumeCapacity: 10G
+
+  storageClass:
+    name: prod-retain
+
+  oneReplicaPerNode: false
+
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+
+  listeners:
+    controller:
+      authentication:
+        type: plain
+        jaasConfig:
+          secretRef: kraft-sasl-server
+      tls:
+        enabled: false
+  
+  configOverrides:
+    server:
+      - default.replication.factor=3

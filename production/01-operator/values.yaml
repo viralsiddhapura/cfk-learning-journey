@@ -1,0 +1,6 @@
+namespaced: true
+
+namespaceList:
+  - prod
+
+replicas: 2

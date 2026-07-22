@@ -1,0 +1,6 @@
+{
+    "kafka-broker": "thisismybrokerpassword",
+    "connect": "thisismyconnectpassword",
+    "schemaregistry": "thisismyschemaregistrypassword",
+    "kafka-admin": "thisismykafkaadminpassword"
+}

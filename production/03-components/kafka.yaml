@@ -1,0 +1,66 @@
+apiVersion: platform.confluent.io/v1beta1
+kind: Kafka
+metadata:
+  name: kafka
+  namespace: prod
+  annotations:
+    platform.confluent.io/use-log4j1: "true"
+    platform.confluent.io/broker-id-offset: "100"
+spec:
+  replicas: 3
+  image:
+    application: docker.io/confluentinc/cp-server:7.9.8
+    init: docker.io/confluentinc/confluent-init-container:3.3.0
+    pullPolicy: IfNotPresent
+
+  dataVolumeCapacity: 10G
+
+  storageClass:
+    name: prod-retain
+  
+
+  # Sinlge-node development/pre-production scenarios - look for pod-affinity vs pod-anti-affinity in the Kafka CRD spec.
+  # In production, you want to ensure that each broker is on a different node, so that if a node goes down, you don't lose all your brokers.
+  oneReplicaPerNode: false
+
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+  
+  # Understand - only for internal communication between brokers, not for client communication.  This is the listener that brokers use to talk to each other.
+  # Who acts as a server here - The Brokers!! Others are clients (Connect, Schema Registry, and KRaft Controller will use the internal listener to talk to Kafka brokers)
+  listeners:
+    internal:
+      authentication:
+        type: plain
+        jaasConfig:
+          secretRef: kafka-sasl-server
+      tls:
+        enabled: false
+  
+  # Here slight difference from the previous listener - who acts as a server here - The KRaft Controller!! 
+  # Others are clients (Connect, Schema Registry, and Kafka brokers will use the controller listener to talk to the KRaft Controller)
+  # https://docs.confluent.io/operator/current/co-configure-kraft.html#configure-kafka-for-kraft
+  dependencies:
+    kRaftController:
+      clusterRef:
+        name: kraftcontroller
+        namespace: prod
+      controllerListener:
+        authentication:
+          type: plain
+          jaasConfig:
+            secretRef: kafka-kraft-sasl-client
+        tls:
+          enabled: false
+  
+  configOverrides:
+    server:
+      - inter.broker.protocol.version=3.9
+      - default.replication.factor=3
+      - min.insync.replicas=2
+      - offsets.topic.replication.factor=3
+      - transaction.state.log.replication.factor=3
+      - transaction.state.log.min.isr=2
+      - auto.create.topics.enable=false
+      - unclean.leader.election.enable=false
