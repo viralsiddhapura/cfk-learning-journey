@@ -10,3 +10,15 @@
 *.xltx
 *.xltm
 *.xlam
+
+# Private key and credential formats
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.truststore
+
+.env
+.env.*
+!*.env.example
